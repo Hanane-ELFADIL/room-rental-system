@@ -1,88 +1,133 @@
 package com.kotbihousing.backend.config;
-import java.io.IOException;
-import java.util.List;
-import org.springframework.context.annotation.*;
-import org.springframework.security.authentication.*;
+
+import com.kotbihousing.backend.util.JwtUtil;
+import com.kotbihousing.backend.repository.UserRepository;
+import jakarta.servlet.FilterChain;
+import jakarta.servlet.ServletException;
+import org.springframework.http.HttpMethod;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
+import lombok.RequiredArgsConstructor;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.security.authentication.AuthenticationManager;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.config.annotation.authentication.configuration.AuthenticationConfiguration;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
+import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
 import org.springframework.security.config.http.SessionCreationPolicy;
+import org.springframework.security.core.authority.AuthorityUtils;
 import org.springframework.security.core.context.SecurityContextHolder;
-import org.springframework.security.core.userdetails.UserDetails;
+import org.springframework.security.core.userdetails.UserDetailsService;
+import org.springframework.security.core.userdetails.UsernameNotFoundException;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
-import org.springframework.security.web.authentication.WebAuthenticationDetailsSource;
-import org.springframework.web.cors.*;
 import org.springframework.web.filter.OncePerRequestFilter;
-import com.kotbihousing.backend.service.UserDetailsServiceImpl;
-import com.kotbihousing.backend.util.JwtUtil;
-import jakarta.servlet.FilterChain;
-import jakarta.servlet.http.*;
-import lombok.RequiredArgsConstructor;
+
+import java.io.IOException;
 
 @Configuration
+@EnableWebSecurity
 @RequiredArgsConstructor
 public class SecurityConfig {
 
-    private final UserDetailsServiceImpl userDetailsService;
     private final JwtUtil jwtUtil;
+    private final UserRepository userRepository;
 
     @Bean
-    public SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
+    public SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
         http
             .csrf(csrf -> csrf.disable())
-            .cors(cors -> cors.configurationSource(corsConfigurationSource()))
-            .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
-            .authorizeHttpRequests(auth -> auth
-                .requestMatchers("/api/auth/**").permitAll()
-                .anyRequest().authenticated()
-            )
-            .addFilterBefore(jwtFilter(), UsernamePasswordAuthenticationFilter.class);
+            .cors(cors -> cors.configurationSource(request -> {
+                var config = new org.springframework.web.cors.CorsConfiguration();
+                config.setAllowedOrigins(java.util.List.of("http://localhost:5173"));
+                config.setAllowedMethods(java.util.List.of("GET","POST","PUT","DELETE","OPTIONS"));
+                config.setAllowedHeaders(java.util.List.of("*"));
+                config.setAllowCredentials(true);
+                return config;
+            }))
+            .sessionManagement(session ->
+                session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
+                .authorizeHttpRequests(auth -> auth
+                        .requestMatchers("/api/auth/**").permitAll()
+                        .requestMatchers(HttpMethod.GET, "/api/rooms").permitAll()
+                        .requestMatchers(HttpMethod.GET, "/api/rooms/{id}").permitAll()
+                        .requestMatchers(HttpMethod.GET, "/api/rooms/my-rooms").authenticated()
+                        .requestMatchers(HttpMethod.POST, "/api/rooms/**").hasAuthority("ROLE_OWNER")
+                        .requestMatchers(HttpMethod.PUT, "/api/rooms/**").hasAuthority("ROLE_OWNER")
+                        .requestMatchers(HttpMethod.DELETE, "/api/rooms/**").hasAuthority("ROLE_OWNER")
+                        .requestMatchers("/api/requests/**").authenticated()
+                        .requestMatchers("/api/messages/**").authenticated()
+                        .requestMatchers("/api/notifications/**").authenticated()
+                        .anyRequest().authenticated()
+                )
+            .addFilterBefore(jwtAuthFilter(), UsernamePasswordAuthenticationFilter.class);
+
         return http.build();
     }
 
     @Bean
-    public CorsConfigurationSource corsConfigurationSource() {
-        CorsConfiguration config = new CorsConfiguration();
-        config.setAllowedOrigins(List.of("http://localhost:5173"));
-        config.setAllowedMethods(List.of("GET", "POST", "PUT", "DELETE", "OPTIONS"));
-        config.setAllowedHeaders(List.of("*"));
-        config.setAllowCredentials(true);
-        UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
-        source.registerCorsConfiguration("/**", config);
-        return source;
-    }
-
-    @Bean
-    public OncePerRequestFilter jwtFilter() {
+    public OncePerRequestFilter jwtAuthFilter() {
         return new OncePerRequestFilter() {
             @Override
             protected void doFilterInternal(HttpServletRequest request,
                                             HttpServletResponse response,
-                                            FilterChain chain)
-                    throws jakarta.servlet.ServletException, IOException {
-                String header = request.getHeader("Authorization");
-                if (header != null && header.startsWith("Bearer ")) {
-                    String token = header.substring(7);
-                    if (jwtUtil.isTokenValid(token)) {
-                        String email = jwtUtil.extractEmail(token);
-                        UserDetails userDetails = userDetailsService.loadUserByUsername(email);
-                        UsernamePasswordAuthenticationToken auth =
-                            new UsernamePasswordAuthenticationToken(
-                                userDetails, null, userDetails.getAuthorities());
-                        auth.setDetails(new WebAuthenticationDetailsSource().buildDetails(request));
-                        SecurityContextHolder.getContext().setAuthentication(auth);
+                                            FilterChain filterChain)
+                    throws ServletException, IOException {
+
+                String authHeader = request.getHeader("Authorization");
+
+                if (authHeader == null || !authHeader.startsWith("Bearer ")) {
+                    filterChain.doFilter(request, response);
+                    return;
+                }
+
+                String token = authHeader.substring(7);
+
+                if (!jwtUtil.isTokenValid(token)) {
+                    filterChain.doFilter(request, response);
+                    return;
+                }
+
+                String email = jwtUtil.extractEmail(token);
+
+                if (email != null && SecurityContextHolder.getContext().getAuthentication() == null) {
+                    String role = jwtUtil.extractRole(token);
+                    System.out.println("=== JWT Filter: email=" + email + " | role=" + role + " | path=" + request.getRequestURI() + " | method=" + request.getMethod());
+                    if (role != null) {
+                        var authToken = new UsernamePasswordAuthenticationToken(
+                            email, null,
+                            AuthorityUtils.createAuthorityList("ROLE_" + role)
+                        );
+                        SecurityContextHolder.getContext().setAuthentication(authToken);
+                        System.out.println("=== Auth set: authorities=" + authToken.getAuthorities());
+                    } else {
+                        System.out.println("=== ROLE IS NULL — token invalide ou mal formé");
                     }
                 }
-                chain.doFilter(request, response);
+
+                filterChain.doFilter(request, response);
             }
         };
     }
 
     @Bean
-    public PasswordEncoder passwordEncoder() { return new BCryptPasswordEncoder(); }
+    public UserDetailsService userDetailsService() {
+        return email -> userRepository.findByEmail(email)
+            .map(user -> org.springframework.security.core.userdetails.User
+                .withUsername(user.getEmail())
+                .password(user.getPassword())
+                .roles(user.getRole().name())
+                .build())
+            .orElseThrow(() -> new UsernameNotFoundException("Utilisateur non trouvé : " + email));
+    }
+
+    @Bean
+    public PasswordEncoder passwordEncoder() {
+        return new BCryptPasswordEncoder();
+    }
 
     @Bean
     public AuthenticationManager authenticationManager(AuthenticationConfiguration config) throws Exception {
