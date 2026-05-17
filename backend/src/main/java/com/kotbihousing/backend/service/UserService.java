@@ -1,41 +1,37 @@
 package com.kotbihousing.backend.service;
 
+import com.kotbihousing.backend.dto.ChangePasswordRequest;
+import com.kotbihousing.backend.model.User;
+import com.kotbihousing.backend.repository.UserRepository;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.security.authentication.BadCredentialsException;
+import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 
-import com.kotbihousing.backend.dto.ProfileResponse;
-import com.kotbihousing.backend.dto.UpdateProfileRequest;
-import com.kotbihousing.backend.entity.User;
-import com.kotbihousing.backend.repository.UserRepository;
-
-import lombok.RequiredArgsConstructor;
+import java.util.Optional;
 
 @Service
-@RequiredArgsConstructor
 public class UserService {
 
-    private final UserRepository userRepository;
+    @Autowired
+    private UserRepository userRepository;
 
-    public ProfileResponse getProfile(String email) {
-        User user = userRepository.findByEmail(email)
-                .orElseThrow(() -> new RuntimeException("Utilisateur non trouvé"));
-        return new ProfileResponse(
-                user.getId(), user.getFullName(), user.getEmail(),
-                user.getPhone(), user.getCity(), user.getRole().name()
-        );
+    @Autowired
+    private PasswordEncoder passwordEncoder;
+
+    public Optional<User> findByEmail(String email) {
+        return userRepository.findByEmail(email);
     }
 
-    public ProfileResponse updateProfile(String email, UpdateProfileRequest request) {
+    public void changePassword(String email, ChangePasswordRequest request) {
         User user = userRepository.findByEmail(email)
-                .orElseThrow(() -> new RuntimeException("Utilisateur non trouvé"));
+                .orElseThrow(() -> new RuntimeException("Utilisateur introuvable"));
 
-        if (request.getFullName() != null) user.setFullName(request.getFullName());
-        if (request.getPhone() != null) user.setPhone(request.getPhone());
-        if (request.getCity() != null) user.setCity(request.getCity());
+        if (!passwordEncoder.matches(request.getCurrentPassword(), user.getPassword())) {
+            throw new BadCredentialsException("Mot de passe actuel incorrect");
+        }
 
+        user.setPassword(passwordEncoder.encode(request.getNewPassword()));
         userRepository.save(user);
-        return new ProfileResponse(
-                user.getId(), user.getFullName(), user.getEmail(),
-                user.getPhone(), user.getCity(), user.getRole().name()
-        );
     }
 }

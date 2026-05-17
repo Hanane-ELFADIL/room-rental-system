@@ -1,37 +1,39 @@
 package com.kotbihousing.backend.controller;
 
-import org.springframework.http.ResponseEntity;
-import org.springframework.security.core.Authentication;
-import org.springframework.web.bind.annotation.CrossOrigin;
-import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.PutMapping;
-import org.springframework.web.bind.annotation.RequestBody;
-import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RestController;
 
-import com.kotbihousing.backend.dto.ProfileResponse;
-import com.kotbihousing.backend.dto.UpdateProfileRequest;
+import com.kotbihousing.backend.dto.ChangePasswordRequest;
 import com.kotbihousing.backend.service.UserService;
-
+import com.kotbihousing.backend.util.JwtUtil;
 import lombok.RequiredArgsConstructor;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+import org.springframework.security.authentication.BadCredentialsException;
+import org.springframework.web.bind.annotation.*;
 
 @RestController
-@RequestMapping("/api/users")
+@RequestMapping("/api/user")
 @CrossOrigin(origins = "http://localhost:5173")
 @RequiredArgsConstructor
 public class UserController {
 
     private final UserService userService;
+    private final JwtUtil jwtUtil;
 
-    @GetMapping("/profile")
-    public ResponseEntity<ProfileResponse> getProfile(Authentication auth) {
-        return ResponseEntity.ok(userService.getProfile(auth.getName()));
-    }
-
-    @PutMapping("/profile")
-    public ResponseEntity<ProfileResponse> updateProfile(
-            Authentication auth,
-            @RequestBody UpdateProfileRequest request) {
-        return ResponseEntity.ok(userService.updateProfile(auth.getName(), request));
+    @PutMapping("/change-password")
+    public ResponseEntity<?> changePassword(
+            @RequestBody ChangePasswordRequest request,
+            @RequestHeader("Authorization") String authHeader) {
+        try {
+            String token = authHeader.replace("Bearer ", "");
+            String email = jwtUtil.extractEmail(token);
+            userService.changePassword(email, request);
+            return ResponseEntity.ok("Mot de passe modifié avec succès");
+        } catch (BadCredentialsException e) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
+                    .body("Mot de passe actuel incorrect");
+        } catch (Exception e) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body("Erreur serveur");
+        }
     }
 }
